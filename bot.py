@@ -76,7 +76,7 @@ async def check_security_headers(url):
 
 async def check_sensitive_files(base_url):
     base_url = base_url.rstrip('/')
-    result = "📁 **فحص الملفات والمجلدات المخفية (Dirbusting):**\n"
+    result = "📁 **نتائج فحص المسارات والمجلدات الدقيقة:**\n"
     found_count = 0
     
     async with aiohttp.ClientSession() as session:
@@ -86,12 +86,12 @@ async def check_sensitive_files(base_url):
         for path, (status, _) in zip(SENSITIVE_PATHS, responses):
             if status == 200:
                 found_count += 1
-                result += f"  🚨 مكشوف وخطير: `{base_url + path}` (200)\n"
+                result += f"  🚨 [مكشوف تماماً]: `{base_url + path}` (رمز الاستجابة: 200)\n"
             elif status == 403:
-                result += f"  🔒 محمي: `{base_url + path}` (403)\n"
+                result += f"  🔒 [مغلق/محمي]: `{base_url + path}` (رمز الاستجابة: 403)\n"
                 
     if found_count == 0:
-        result += "  ✅ لم يتم كشف مسارات حساسة عامة.\n"
+        result += "  ✅ لم يتم كشف مسارات حساسة عامة ظاهرة.\n"
     return result, found_count
 
 async def check_sqli(url):
@@ -100,10 +100,10 @@ async def check_sqli(url):
     query_params = urllib.parse.parse_qs(parsed_url.query)
     
     if not query_params:
-        return "⚠️ **SQL Injection:** الرابط خالٍ من المعاملات (Parameters) للفحص المباشر.", False
+        return "⚠️ **SQL Injection:** الرابط لا يحتوي على معاملات (Parameters) واضحة للفحص المباشر.", False
     
     vulnerable = False
-    result = "💉 **فحص حقن قواعد البيانات (SQLi Engine):**\n"
+    result = "💉 **نتائج فحص المعاملات الدقيقة:**\n"
     
     async with aiohttp.ClientSession() as session:
         for param in query_params:
@@ -113,10 +113,12 @@ async def check_sqli(url):
                 sql_errors = ["sql syntax", "mysql", "syntax error", "sqlite", "postgresql", "ora-"]
                 if any(err in html.lower() for err in sql_errors):
                     vulnerable = True
-                    result += f"  🚨 خطر حرج: المعامل `{param}` يعرض أخطاء قاعدة بيانات!\n"
+                    result += f"  🚨 [مكان الثغرة بالتحديد]:\n"
+                    result += f"     - المعامل المصاب: `{param}`\n"
+                    result += f"     - الرابط الفعلي المختبر: `{test_url}`\n"
                     
     if not vulnerable:
-        result += "  ✅ لم يتم اكتشاف ثغرات SQLi سطحية واضحة.\n"
+        result += "  ✅ جميع المعاملات المفحوصة لم تظهر استجابة خطأ واضحة.\n"
     return result, vulnerable
 
 async def check_port(domain, port):
@@ -151,7 +153,7 @@ def generate_pdf_report(url, report_text):
     width, height = letter
     
     c.setFont("Helvetica-Bold", 16)
-    c.drawString(50, height - 50, "Cyber-Sentinel Enterprise Security Report")
+    c.drawString(50, height - 50, "Falcon Eye (عين الصقر) - Security Audit Report")
     c.setFont("Helvetica", 10)
     c.drawString(50, height - 70, f"Target URL: {url}")
     c.drawString(50, height - 85, f"Generated At: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -174,11 +176,14 @@ def generate_pdf_report(url, report_text):
     return pdf_buffer
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton("🚀 ابدأ نظام الفحص المتقدم", callback_data="intro")]]
+    keyboard = [[InlineKeyboardButton("🦅 ابدأ الفحص الدقيق مع عين الصقر", callback_data="intro")]]
     await update.message.reply_text(
-        "أهلاً بك في **Cyber-Sentinel AI Bot** (الجيل القادم من منصات الفحص الأمني 🛡️🔥)\n\n"
-        "أرسل لي رابط الموقع مباشرة (مثال: `https://example.com`) وسيقوم البوت بإجراء فحص هندسي شامل وتحليلي وتصدير تقرير PDF رسمي لك.",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        "👋 **أهلاً بك في بوت (عين الصقر 🦅 - Falcon Eye)**\n\n"
+        "أنا نظامك الأمني الذكي والمتطور، أمتلك نظرة حادة لاكتشاف الثغرات وتحديد أماكن الخلل بدقة تامة.\n\n"
+        "🎯 **كيف أعمل؟**\n"
+        "فقط أرسل لي رابط الموقع المراد فحصه (مثال: `https://example.com/?id=1`) وسأقوم بتمحيصه وتحديد الأماكن بدقة تامة وإرسال تقرير PDF رسمي لك.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -188,9 +193,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     context.user_data['target_url'] = url
-    keyboard = [[InlineKeyboardButton("⚡ تنفيذ الفحص الشامل وتوليد PDF", callback_data="run_deep_scan")]]
+    keyboard = [[InlineKeyboardButton("⚡ إطلاق عين الصقر للفحص الشامل وتوليد PDF", callback_data="run_deep_scan")]]
     await update.message.reply_text(
-        f"🔗 تم اعتماد الرابط بنجاح:\n`{url}`\n\nاضغط أدناه للبدء بالتحليل الأمني العميق:",
+        f"🦅 **تم رصد الهدف بنجاح بواسطة عين الصقر:**\n`{url}`\n\nاضغط الزر أدناه لبدء عملية المسح الأمني الدقيق:",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
@@ -205,7 +210,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⚠️ يرجى إرسال رابط الموقع أولاً كتابةً في المحادثة.")
             return
             
-        await query.edit_message_text(f"⏳ جارٍ الآن إطلاق محركات الفحص المتقدمة على الهدف:\n`{url}`\nيرجى الانتظار...", parse_mode="Markdown")
+        await query.edit_message_text(f"🦅 **عين الصقر تفتح عينيها الآن...**\nجاري فحص الهدف وتحديد الأماكن بدقة:\n`{url}`\nيرجى الانتظار قليلاً...", parse_mode="Markdown")
         
         headers_res, headers_score = await check_security_headers(url)
         sensitive_res, sensitive_count = await check_sensitive_files(url)
@@ -216,7 +221,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         risk_label = "حرج 🔴" if risk_score < 40 else ("متوسط 🟡" if risk_score < 70 else "آمن نسبياً 🟢")
         
         full_report = f"====================================\n"
-        full_report += f" CYBER-SENTINEL ENTERPRISE AUDIT\n"
+        full_report += f" FALCON EYE (عين الصقر) SECURITY AUDIT\n"
         full_report += f" Target: {url}\n"
         full_report += f" Risk Status: {risk_label} (Score: {max(0, risk_score)}/100)\n"
         full_report += f"====================================\n\n"
@@ -234,7 +239,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await context.bot.send_message(
             chat_id=query.message.chat_id,
-            text=f"📊 **اكتمل الفحص بنجاح تام!**\n\n- تقييم الأمان العام: **{risk_label}**\n- عدد الملفات المكشوفة: `{sensitive_count}`\n- المنافذ المفتوحة: `{open_ports_count}`\n\nجاري إعداد تقرير الـ PDF الهندسي وإرساله لك...",
+            text=f"🦅 **انتهت مهمة عين الصقر بنجاح تام!**\n\n- تقييم الأمان العام: **{risk_label}**\n- الملفات المكشوفة: `{sensitive_count}`\n- المنافذ المفتوحة: `{open_ports_count}`\n\nجاري إعداد وإرسال تقرير الـ PDF الرسمي...",
             parse_mode="Markdown"
         )
         
@@ -244,8 +249,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_document(
             chat_id=query.message.chat_id,
             document=pdf_file,
-            filename=f"Security_Report_{clean_domain}.pdf",
-            caption=f"📄 تقرير الأمن السيبراني الرسمي لـ: {url}"
+            filename=f"FalconEye_Report_{clean_domain}.pdf",
+            caption=f"🦅📄 تقرير عين الصقر الرسمي لـ: {url}"
         )
 
 if __name__ == '__main__':
@@ -254,5 +259,5 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
     
-    print("النسخة المليونية المتقدمة تعمل الآن بنجاح...")
+    print("عين الصقر يحلق الآن ويعمل بنجاح...")
     app.run_polling()
