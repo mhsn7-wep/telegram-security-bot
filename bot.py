@@ -12,9 +12,10 @@ import re
 import aiohttp
 from bs4 import BeautifulSoup
 
-# مكتبات تصميم الـ PDF
+# مكتبات تصميم الـ PDF المحدثة والمستقرة
 from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
@@ -218,40 +219,31 @@ async def scan_ports(url):
             
     return result, open_ports
 
-# الدالة المعدلة والآمنة 100% للـ PDF لمنع المربعات السوداء نهائياً
+# دالة توليد الـ PDF المحدثة باستخدام SimpleDocTemplate لمنع المربعات السوداء
 def generate_pdf_report(url, safety_percent, risk_text, raw_details):
     pdf_buffer = io.BytesIO()
-    c = canvas.Canvas(pdf_buffer, pagesize=letter)
-    width, height = letter
+    doc = SimpleDocTemplate(pdf_buffer, pagesize=letter, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
+    story = []
     
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(40, height - 40, "Falcon Eye Enterprise Security Report")
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=14, textColor='black', spaceAfter=10)
+    normal_style = ParagraphStyle('NormalStyle', parent=styles['Normal'], fontSize=8, leading=12, textColor='black')
     
-    c.setFont("Helvetica", 10)
-    c.drawString(40, height - 65, f"Target URL: {url}")
-    c.drawString(40, height - 80, f"Generated At: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    c.drawString(40, height - 95, f"Safety Score: {safety_percent}%")
-    c.drawString(40, height - 110, f"Risk Level: {risk_text}")
-    c.line(40, height - 120, width - 40, height - 120)
-    
-    text_object = c.beginText(40, height - 140)
-    text_object.setFont("Helvetica", 8)
-    text_object.setLeading(12)
+    story.append(Paragraph("Falcon Eye Enterprise Security Report", title_style))
+    story.append(Paragraph(f"<b>Target URL:</b> {url}", normal_style))
+    story.append(Paragraph(f"<b>Generated At:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", normal_style))
+    story.append(Paragraph(f"<b>Safety Score:</b> {safety_percent}%", normal_style))
+    story.append(Paragraph(f"<b>Risk Level:</b> {risk_text}", normal_style))
+    story.append(Spacer(1, 15))
     
     for line in raw_details.split('\n'):
-        # فلترة قاسية جداً تضمن قبول الحروف الإنجليزية القياسية فقط وتحويل أي رمز غريب
         clean_line = "".join([ch for ch in line if ord(ch) < 128])
-        
         if not clean_line.strip():
             continue
-            
-        if len(clean_line) > 95:
-            clean_line = clean_line[:92] + "..."
-            
-        text_object.textLine(clean_line)
+        clean_line = clean_line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        story.append(Paragraph(clean_line, normal_style))
         
-    c.drawText(text_object)
-    c.save()
+    doc.build(story)
     pdf_buffer.seek(0)
     return pdf_buffer
 
@@ -268,13 +260,14 @@ def generate_json_report(url, safety_percent, risk_text, raw_details):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("Start Falcon Eye", callback_data="intro")],
-        [InlineKeyboardButton("Control Panel / History", callback_data="show_history")]
+        [InlineKeyboardButton("🚀 Start Falcon Eye v2.0", callback_data="intro")],
+        [InlineKeyboardButton("📊 Control Panel / History", callback_data="show_history")]
     ]
+    # **العبارة الترحيبية الجديدة والمميزة لتتأكد من التحديث**
     await update.message.reply_text(
-        "Welcome to Falcon Eye Bot\n\n"
-        "Advanced Upgraded Vulnerability Scanner with SSL & Clean PDF Report.\n"
-        "Send your target URL (e.g., https://example.com) to begin.",
+        "🦅 **[UPDATED] Welcome to Falcon Eye Security Bot (v2.0)**\n\n"
+        "✨ Status: Successfully updated with Clean PDF Engine & SSL Check!\n"
+        "🔗 Send your target URL (e.g., `https://example.com`) right now to begin scanning.",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
@@ -360,7 +353,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("Start Scanning", callback_data="intro_msg")],
             [InlineKeyboardButton("Control Panel / History", callback_data="show_history")]
         ]
-        await query.edit_message_text("Falcon Eye Dashboard Ready.\nSend any target URL to begin.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await query.edit_message_text("Falcon Eye v2.0 Dashboard Ready.\nSend any target URL to begin.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         return
 
     url = context.user_data.get('target_url')
