@@ -3,3 +3,4 @@ requests
 beautifulsoup4
 aiohttp
 reportlab
+aiohttp>=3.9.0
