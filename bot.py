@@ -8,6 +8,7 @@ import io
 import ssl
 import socket
 import json
+import re
 import aiohttp
 from bs4 import BeautifulSoup
 
@@ -53,7 +54,6 @@ async def fetch(session, url):
     except:
         return None, None
 
-# فحص شهادة الأمان SSL/TLS الجديد
 async def check_ssl_certificate(url):
     domain = url.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
     try:
@@ -69,12 +69,12 @@ async def check_ssl_certificate(url):
         cert = await asyncio.to_thread(get_cert)
         not_after = cert.get('notAfter')
         
-        result = f"🔒 SSL/TLS CERTIFICATE CHECK:\n"
+        result = f"SSL/TLS CERTIFICATE CHECK:\n"
         result += f"  [SECURE] Valid SSL Certificate detected for domain: {domain}\n"
         result += f"  - Expires on: {not_after}\n"
         return result, 100
     except Exception as e:
-        return f"🔒 SSL/TLS CERTIFICATE CHECK:\n  [VULNERABLE/WARNING] SSL Issue or HTTP-only: {str(e)}\n", 50
+        return f"SSL/TLS CERTIFICATE CHECK:\n  [VULNERABLE/WARNING] SSL Issue or HTTP-only: {str(e)}\n", 50
 
 async def check_security_headers(url):
     try:
@@ -91,7 +91,7 @@ async def check_security_headers(url):
                 ]
                 
                 score = 100
-                result = f"🛡️ SECURITY HEADERS:\n"
+                result = f"SECURITY HEADERS:\n"
                 result += f"  - Server: {server}\n"
                 
                 missing_headers = []
@@ -109,11 +109,11 @@ async def check_security_headers(url):
 
                 return result, max(0, score)
     except Exception as e:
-        return f"❌ Headers Check Error: {str(e)}", 0
+        return f"Headers Check Error: {str(e)}", 0
 
 async def check_sensitive_files(base_url):
     base_url = base_url.rstrip('/')
-    result = "📁 SENSITIVE FILES & DIRS (Dirbusting):\n"
+    result = "SENSITIVE FILES & DIRS (Dirbusting):\n"
     found_count = 0
     
     async with aiohttp.ClientSession() as session:
@@ -141,10 +141,10 @@ async def check_sqli(url):
     query_params = urllib.parse.parse_qs(parsed_url.query)
     
     if not query_params:
-        return "💉 SQL INJECTION: URL has no parameters.", False
+        return "SQL INJECTION: URL has no parameters.", False
     
     vulnerable = False
-    result = "💉 SQL INJECTION PARAMETER SCAN:\n"
+    result = "SQL INJECTION PARAMETER SCAN:\n"
     
     async with aiohttp.ClientSession() as session:
         for param in query_params:
@@ -170,10 +170,10 @@ async def check_xss(url):
     query_params = urllib.parse.parse_qs(parsed_url.query)
     
     if not query_params:
-        return "⚡ REFLECTED XSS: URL has no parameters.", False
+        return "REFLECTED XSS: URL has no parameters.", False
         
     vulnerable = False
-    result = "⚡ REFLECTED XSS SCAN:\n"
+    result = "REFLECTED XSS SCAN:\n"
     
     async with aiohttp.ClientSession() as session:
         for param in query_params:
@@ -204,7 +204,7 @@ async def scan_ports(url):
     domain = url.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
     ports = [21, 22, 25, 80, 443, 3306, 3389, 8080]
     
-    result = f"🚪 PORT SCAN:\n"
+    result = f"PORT SCAN:\n"
     tasks = [check_port(domain, port) for port in ports]
     results = await asyncio.gather(*tasks)
     
@@ -218,6 +218,7 @@ async def scan_ports(url):
             
     return result, open_ports
 
+# دالة توليد الـ PDF المنظّفة بالكامل من المربعات السوداء والإيموجي
 def generate_pdf_report(url, safety_percent, risk_text, raw_details):
     pdf_buffer = io.BytesIO()
     c = canvas.Canvas(pdf_buffer, pagesize=letter)
@@ -237,10 +238,18 @@ def generate_pdf_report(url, safety_percent, risk_text, raw_details):
     text_object.setFont("Helvetica", 8)
     text_object.setLeading(12)
     
+    emoji_pattern = re.compile("[\U00010000-\U0010ffff]|[\u2600-\u27BF]|[\U0001f300-\U0001f5ff]|[\U0001f600-\U0001f64f]|[\U0001f680-\U0001f6ff]|[\U0001f700-\U0001f77f]|[\U0001f780-\U0001f7ff]|[\U0001f800-\U0001f8ff]|[\U0001f900-\U0001f9ff]|[\U0001fa00-\U0001fa6f]|[\U0001fa70-\U0001faff]|[\u2000-\u3300]", flags=re.UNICODE)
+    
     for line in raw_details.split('\n'):
-        clean_line = line.encode('ascii', 'ignore').decode('ascii')
+        clean_line = emoji_pattern.sub(r'', line)
+        clean_line = clean_line.encode('ascii', 'ignore').decode('ascii')
+        
+        if len(clean_line.strip()) == 0:
+            continue
+            
         if len(clean_line) > 100:
             clean_line = clean_line[:97] + "..."
+            
         text_object.textLine(clean_line)
         
     c.drawText(text_object)
@@ -248,7 +257,6 @@ def generate_pdf_report(url, safety_percent, risk_text, raw_details):
     pdf_buffer.seek(0)
     return pdf_buffer
 
-# دالة لتوليد ملف JSON للنتائج
 def generate_json_report(url, safety_percent, risk_text, raw_details):
     data = {
         "target_url": url,
@@ -267,7 +275,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await update.message.reply_text(
         "👋 **Welcome to Falcon Eye Bot (عين الصقر 🦅)**\n\n"
-        "Advanced Upgraded Vulnerability Scanner with SSL & JSON Export.\n"
+        "Advanced Upgraded Vulnerability Scanner with SSL & Clean PDF Report.\n"
         "Send your target URL (e.g., `https://example.com`) to begin.",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
@@ -301,8 +309,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['target_url'] = url
     
     keyboard = [
-        [InlineKeyboardButton("📊 Run Full Deep Audit (SSL + Vulnerabilities)", callback_data="run_full_audit")],
-        [InlineKeyboardButton("📄 Export PDF Report", callback_data="run_pdf_report")],
+        [InlineKeyboardButton("📊 Run Full Deep Audit", callback_data="run_full_audit")],
+        [InlineKeyboardButton("📄 Export Clean PDF Report", callback_data="run_pdf_report")],
         [InlineKeyboardButton("📦 Export JSON Report", callback_data="run_json_report")],
         [InlineKeyboardButton("🏠 Main Dashboard", callback_data="intro")]
     ]
