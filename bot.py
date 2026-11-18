@@ -1,156 +1,441 @@
 import os
-import aiohttp
+import logging
 import asyncio
+import urllib.parse
+import sqlite3
+from datetime import datetime
+import io
 import ssl
 import socket
-from datetime import datetime
-from urllib.parse import urlparse
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import json
+import aiohttp
+from bs4 import BeautifulSoup
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# مكتبات تصميم الـ PDF
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 
-async def analyze_ssl_security(domain: str) -> dict:
-    """فحص معماري دقيق لشهادة SSL والبروتوكولات"""
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+def init_db():
+    conn = sqlite3.connect('scanner_vault.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS scans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            target_url TEXT,
+            scan_date TEXT,
+            risk_level TEXT,
+            details TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+SENSITIVE_PATHS = [
+    "/robots.txt", "/sitemap.xml", "/admin/", "/administrator/", 
+    "/.git/config", "/backup.zip", "/config.php", "/wp-login.php", "/api/v1/",
+    "/.env", "/config.json", "/database.sql", "/backup.tar.gz"
+]
+
+async def fetch(session, url):
     try:
-        ctx = ssl.create_default_context()
-        with socket.create_connection((domain, 443), timeout=7) as sock:
-            with ctx.wrap_socket(sock, server_hostname=domain) as ssock:
-                cert = ssock.getpeercert()
-                version = ssock.version()
-                expiry_date = datetime.strptime(cert['notAfter'], '%b %d %H:%M:%S %Y %Z')
-                days_left = (expiry_date - datetime.utcnow()).days
-                
-                issues = []
-                if days_left < 30:
-                    issues.append(f"تحذير: الشهادة تنتهي قريباً ({days_left} يوماً)")
-                if version in ["TLSv1", "TLSv1.1"]:
-                    issues.append(f"ثغرة خطيرة: استخدام بروتوكول تشفير قديم وغير آمن ({version})")
+        async with session.get(url, timeout=5, ssl=False) as response:
+            return response.status, await response.text()
+    except:
+        return None, None
 
-                return {
-                    "status": "secure" if not issues else "warning",
-                    "version": version,
-                    "days_left": days_left,
-                    "issues": issues
-                }
+# فحص شهادة الأمان SSL/TLS الجديد
+async def check_ssl_certificate(url):
+    domain = url.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
+    try:
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        
+        def get_cert():
+            with socket.create_connection((domain, 443), timeout=3) as sock:
+                with context.wrap_socket(sock, server_hostname=domain) as ssock:
+                    return ssock.getpeercert()
+        
+        cert = await asyncio.to_thread(get_cert)
+        not_after = cert.get('notAfter')
+        
+        result = f"🔒 SSL/TLS CERTIFICATE CHECK:\n"
+        result += f"  [SECURE] Valid SSL Certificate detected for domain: {domain}\n"
+        result += f"  - Expires on: {not_after}\n"
+        return result, 100
     except Exception as e:
-        return {"status": "error", "issues": [f"فشل الاتصال الآمن أو النطاق لا يدعم HTTPS: {str(e)}"]}
+        return f"🔒 SSL/TLS CERTIFICATE CHECK:\n  [VULNERABLE/WARNING] SSL Issue or HTTP-only: {str(e)}\n", 50
 
+async def check_security_headers(url):
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=5, ssl=False) as response:
+                headers = response.headers
+                server = headers.get('Server', 'Unknown / Hidden')
+                
+                security_headers = [
+                    'Content-Security-Policy',
+                    'X-Frame-Options',
+                    'X-Content-Type-Options',
+                    'Strict-Transport-Security'
+                ]
+                
+                score = 100
+                result = f"🛡️ SECURITY HEADERS:\n"
+                result += f"  - Server: {server}\n"
+                
+                missing_headers = []
+                for header in security_headers:
+                    if header in headers:
+                        result += f"  [SECURE] {header}: Present\n"
+                    else:
+                        score -= 20
+                        missing_headers.append(header)
+                        result += f"  [VULNERABLE] {header}: Missing\n"
+                        
+                if missing_headers:
+                    result += f"  -> Vulnerability Type: Missing Security Headers\n"
+                    result += f"  -> Risk Level: Medium\n"
 
-async def deep_scan_target(target_url: str) -> str:
-    """فحص عالي الدقة وخالٍ من الأخطاء العشوائية"""
-    parsed = urlparse(target_url)
-    domain = parsed.netloc or parsed.path
+                return result, max(0, score)
+    except Exception as e:
+        return f"❌ Headers Check Error: {str(e)}", 0
+
+async def check_sensitive_files(base_url):
+    base_url = base_url.rstrip('/')
+    result = "📁 SENSITIVE FILES & DIRS (Dirbusting):\n"
+    found_count = 0
     
-    if not domain:
-        return "❌ الرابط المدخل غير صحيح. تأكد من كتابة الرابط بشكل كامل (مثل `https://example.com`)"
-
-    report = [
-        f"🦅 **تقرير عين الصقر (Falcon Eye - النسخة المتقدمة)**",
-        f"🎯 الهدف المستهدف: `{target_url}`\n",
-        "---"
-    ]
-
-    # 1. فحص تشفير SSL
-    ssl_data = await analyze_ssl_security(domain)
-    if ssl_data["status"] == "error":
-        report.append(f"❌ **أمان SSL/TLS:** {ssl_data['issues'][0]}")
-        return "\n".join(report)
-    else:
-        report.append(f"🔒 **بروتوكول التشفير:** `{ssl_data['version']}` (صالح لـ {ssl_data['days_left']} يوماً)")
-        if ssl_data["issues"]:
-            for issue in ssl_data["issues"]:
-                report.append(f"⚠️ {issue}")
-
-    # 2. فحص الهيدرز واستجابة الخادم بدقة
-    headers_to_check = {
-        "Strict-Transport-Security": "حماية HSTS مفقودة (تسمح باختراقات Downgrade)",
-        "Content-Security-Policy": "سياسة أمان المحتوى CSP مفقودة (عرضة لثغرات XSS)",
-        "X-Frame-Options": "حماية Clickjacking مفقودة (X-Frame-Options)",
-        "X-Content-Type-Options": "حماية MIME Sniffing مفقودة"
-    }
-
     async with aiohttp.ClientSession() as session:
-        try:
-            # فحص الاستجابة العادية
-            async with session.get(target_url, timeout=12, allow_redirects=True) as response:
-                report.append(f"🌐 **استجابة الخادم الأساسية:** `{response.status} OK`")
-                resp_headers = response.headers
+        tasks = [fetch(session, base_url + path) for path in SENSITIVE_PATHS]
+        responses = await asyncio.gather(*tasks)
+        
+        for path, (status, _) in zip(SENSITIVE_PATHS, responses):
+            if status == 200:
+                found_count += 1
+                result += f"  [EXPOSED - CRITICAL]: {base_url + path} (Status: 200)\n"
+            elif status == 403:
+                result += f"  [PROTECTED]: {base_url + path} (Status: 403)\n"
+                
+    if found_count > 0:
+        result += f"  -> Vulnerability Type: Information Disclosure\n"
+        result += f"  -> Risk Level: Critical\n"
+    else:
+        result += "  [SAFE] No critical public sensitive files exposed.\n"
+        
+    return result, found_count
 
-                missing = []
-                for header, desc in headers_to_check.items():
-                    if header not in resp_headers:
-                        missing.append(desc)
+async def check_sqli(url):
+    payload = "' OR '1'='1"
+    parsed_url = urllib.parse.urlparse(url)
+    query_params = urllib.parse.parse_qs(parsed_url.query)
+    
+    if not query_params:
+        return "💉 SQL INJECTION: URL has no parameters.", False
+    
+    vulnerable = False
+    result = "💉 SQL INJECTION PARAMETER SCAN:\n"
+    
+    async with aiohttp.ClientSession() as session:
+        for param in query_params:
+            test_url = url.replace(f"{param}={query_params[param][0]}", f"{param}={urllib.parse.quote(payload)}")
+            status, html = await fetch(session, test_url)
+            if html:
+                sql_errors = ["sql syntax", "mysql", "syntax error", "sqlite", "postgresql", "ora-"]
+                if any(err in html.lower() for err in sql_errors):
+                    vulnerable = True
+                    result += f"  [VULNERABLE] Parameter: {param} (URL: {test_url})\n"
+                    
+    if vulnerable:
+        result += f"  -> Vulnerability Type: SQL Injection (SQLi)\n"
+        result += f"  -> Risk Level: Critical\n"
+    else:
+        result += "  [SAFE] No SQL errors detected.\n"
+        
+    return result, vulnerable
 
-                if missing:
-                    report.append("\n⚠️ **رؤوس الحماية المفقودة (خطورة متوسطة إلى عالية):**")
-                    for m in missing:
-                        report.append(f"  - {m}")
-                else:
-                    report.append("\n🛡️ **رؤوس الأمان:** جميع هيدرز الحماية الأساسية مفعلة بنجاح.")
+async def check_xss(url):
+    payload = "<script>alert('XSS')</script>"
+    parsed_url = urllib.parse.urlparse(url)
+    query_params = urllib.parse.parse_qs(parsed_url.query)
+    
+    if not query_params:
+        return "⚡ REFLECTED XSS: URL has no parameters.", False
+        
+    vulnerable = False
+    result = "⚡ REFLECTED XSS SCAN:\n"
+    
+    async with aiohttp.ClientSession() as session:
+        for param in query_params:
+            test_url = url.replace(f"{param}={query_params[param][0]}", f"{param}={urllib.parse.quote(payload)}")
+            status, html = await fetch(session, test_url)
+            if html and payload in html:
+                vulnerable = True
+                result += f"  [VULNERABLE] Parameter: {param}\n"
+                
+    if vulnerable:
+        result += f"  -> Vulnerability Type: Reflected XSS\n"
+        result += f"  -> Risk Level: High\n"
+    else:
+        result += "  [SAFE] No payload reflection.\n"
+        
+    return result, vulnerable
 
-            # 3. الفحص الدقيق والآمن لثغرات الحقن (SQLi & XSS Test Payloads)
-            # نستخدم payloads فريدة ومحددة جداً لا تسبب أي ضرر للموقع ولكن تظهر استجابة خطأ واضحة
-            test_payloads = [
-                ("' OR '1'='1", "SQLi Potential Error"),
-                ("<script>alert(1)</script>", "Reflected XSS Pattern")
-            ]
+async def check_port(domain, port):
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(domain, port), timeout=0.8)
+        writer.close()
+        await writer.wait_closed()
+        return port, True
+    except:
+        return port, False
+
+async def scan_ports(url):
+    domain = url.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
+    ports = [21, 22, 25, 80, 443, 3306, 3389, 8080]
+    
+    result = f"🚪 PORT SCAN:\n"
+    tasks = [check_port(domain, port) for port in ports]
+    results = await asyncio.gather(*tasks)
+    
+    open_ports = 0
+    for port, is_open in results:
+        if is_open:
+            result += f"  [OPEN] Port {port}\n"
+            open_ports += 1
+        else:
+            result += f"  [CLOSED] Port {port}\n"
             
-            vulnerabilities_found = []
-            for payload, vtype in test_payloads:
-                test_url = f"{target_url}?test_input={payload}"
-                async with session.get(test_url, timeout=8) as test_resp:
-                    text_body = await test_resp.text()
-                    # البحث بدقة عن انعكاس الـ Payload أو أخطاء قواعد البيانات الصريحة لمنع الإنذارات الكاذبة
-                    if payload in text_body and vtype == "Reflected XSS Pattern":
-                        vulnerabilities_found.append(f"🚨 احتمالية ثغرة **XSS صريحة** عبر البارامترات المباشرة.")
-                    elif any(err in text_body.lower() for err in ["sql syntax", "mysql_fetch", "syntax error"]):
-                        vulnerabilities_found.append(f"🚨 احتمالية ثغرة **SQL Injection** مطابقة لأخطاء قاعدة البيانات.")
+    return result, open_ports
 
-            if vulnerabilities_found:
-                report.append("\n🔴 **التنبيهات الأمنية الحرجة المكتشفة:**")
-                for vf in vulnerabilities_found:
-                    report.append(f"  - {vf}")
-            else:
-                report.append("\n✅ **فحص الثغرات (SQLi/XSS):** لم يتم رصد أي استجابات خطأ تشير لثغرات برمجية واضحة (الهدف يبدو محصناً ضد الاختبارات السطحية).")
+def generate_pdf_report(url, safety_percent, risk_text, raw_details):
+    pdf_buffer = io.BytesIO()
+    c = canvas.Canvas(pdf_buffer, pagesize=letter)
+    width, height = letter
+    
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(40, height - 40, "Falcon Eye Enterprise Security Report")
+    
+    c.setFont("Helvetica", 10)
+    c.drawString(40, height - 65, f"Target URL: {url}")
+    c.drawString(40, height - 80, f"Generated At: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    c.drawString(40, height - 95, f"Safety Score: {safety_percent}%")
+    c.drawString(40, height - 110, f"Risk Level: {risk_text}")
+    c.line(40, height - 120, width - 40, height - 120)
+    
+    text_object = c.beginText(40, height - 140)
+    text_object.setFont("Helvetica", 8)
+    text_object.setLeading(12)
+    
+    for line in raw_details.split('\n'):
+        clean_line = line.encode('ascii', 'ignore').decode('ascii')
+        if len(clean_line) > 100:
+            clean_line = clean_line[:97] + "..."
+        text_object.textLine(clean_line)
+        
+    c.drawText(text_object)
+    c.save()
+    pdf_buffer.seek(0)
+    return pdf_buffer
 
-        except Exception as e:
-            report.append(f"\n❌ **خطأ أثناء تنفيذ الفحص العميق:** `{str(e)}`")
-
-    report.append("\n---")
-    report.append("📌 *ملاحظة: تم تطبيق خوارزميات تحقق مزدوجة لضمان خلو التقرير من أي إنذارات كاذبة.*")
-    return "\n".join(report)
-
+# دالة لتوليد ملف JSON للنتائج
+def generate_json_report(url, safety_percent, risk_text, raw_details):
+    data = {
+        "target_url": url,
+        "scan_date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        "safety_score": f"{safety_percent}%",
+        "risk_level": risk_text,
+        "scan_details": raw_details
+    }
+    json_bytes = json.dumps(data, indent=4).encode('utf-8')
+    return io.BytesIO(json_bytes)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🦅 Start Falcon Eye", callback_data="intro")],
+        [InlineKeyboardButton("📊 Control Panel / History", callback_data="show_history")]
+    ]
     await update.message.reply_text(
-        "🦅 **أهلاً بك في بوت عين الصقر (Falcon Eye - الدقة القصوى)**\n\n"
-        "البوت مبرمج الآن بأعلى معايير الدقة لفلترة النتائج ومنع أي أخطاء أو إنذارات كاذبة.\n"
-        "للبدء، أرسل الأمر متبوعاً برابط الموقع:\n"
-        "`/scan https://example.com`",
+        "👋 **Welcome to Falcon Eye Bot (عين الصقر 🦅)**\n\n"
+        "Advanced Upgraded Vulnerability Scanner with SSL & JSON Export.\n"
+        "Send your target URL (e.g., `https://example.com`) to begin.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
 
+async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    conn = sqlite3.connect('scanner_vault.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT target_url, scan_date, risk_level FROM scans WHERE user_id = ? ORDER BY id DESC LIMIT 5", (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    if not rows:
+        await update.message.reply_text("📂 No previous scans found.")
+        return
+        
+    text = "📊 **Your Recent Scans:**\n\n"
+    for row in rows:
+        text += f"🔗 Target: `{row[0]}`\n📅 Date: `{row[1]}`\n⚠️ Risk: {row[2]}\n-------------------\n"
+        
+    keyboard = [[InlineKeyboardButton("🗑️ Clear History", callback_data="clear_history")]]
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("⚠️ يرجى كتابة رابط الموقع بعد الأمر، مثال:\n`/scan https://example.com`", parse_mode="Markdown")
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    url = update.message.text.strip()
+    if not url.startswith("http://") and not url.startswith("https://"):
+        await update.message.reply_text("❌ Please send a valid URL starting with `http://` or `https://`")
+        return
+        
+    context.user_data['target_url'] = url
+    
+    keyboard = [
+        [InlineKeyboardButton("📊 Run Full Deep Audit (SSL + Vulnerabilities)", callback_data="run_full_audit")],
+        [InlineKeyboardButton("📄 Export PDF Report", callback_data="run_pdf_report")],
+        [InlineKeyboardButton("📦 Export JSON Report", callback_data="run_json_report")],
+        [InlineKeyboardButton("🏠 Main Dashboard", callback_data="intro")]
+    ]
+    
+    await update.message.reply_text(
+        f"🦅 **Target Captured:**\n`{url}`\n\nSelect an option:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "show_history":
+        user_id = query.from_user.id
+        conn = sqlite3.connect('scanner_vault.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT target_url, scan_date, risk_level FROM scans WHERE user_id = ? ORDER BY id DESC LIMIT 5", (user_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        
+        if not rows:
+            await query.edit_message_text("📂 No previous scans found.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="intro")]]))
+            return
+            
+        text = "📊 **Recent Scans History:**\n\n"
+        for row in rows:
+            text += f"🔗 `{row[0]}`\n📅 `{row[1]}` | ⚠️ {row[2]}\n\n"
+        keyboard = [
+            [InlineKeyboardButton("🗑️ Clear History", callback_data="clear_history")],
+            [InlineKeyboardButton("🔙 Back", callback_data="intro")]
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         return
 
-    url = context.args[0]
-    wait_msg = await update.message.reply_text(f"🔍 [عين الصقر] جاري إجراء الفحص الدقيق والتحقق من سلامة الهدف: `{url}`...", parse_mode="Markdown")
+    if query.data == "clear_history":
+        user_id = query.from_user.id
+        conn = sqlite3.connect('scanner_vault.db')
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM scans WHERE user_id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+        await query.edit_message_text("🗑️ History cleared successfully!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="intro")]]))
+        return
 
-    result = await deep_scan_target(url)
-    await wait_msg.edit_text(result, parse_mode="Markdown")
+    if query.data == "intro":
+        keyboard = [
+            [InlineKeyboardButton("🦅 Start Scanning", callback_data="intro_msg")],
+            [InlineKeyboardButton("📊 Control Panel / History", callback_data="show_history")]
+        ]
+        await query.edit_message_text("🦅 **Falcon Eye Dashboard Ready.**\nSend any target URL to begin.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        return
 
+    url = context.user_data.get('target_url')
+    if not url:
+        await query.edit_message_text("⚠️ Please send the target URL first.")
+        return
 
-if __name__ == "__main__":
-    if not BOT_TOKEN:
-        raise ValueError("يجب ضبط متغير البيئة BOT_TOKEN.")
+    if query.data in ["run_full_audit", "run_pdf_report", "run_json_report"]:
+        await query.edit_message_text(f"🦅 **Falcon Eye Deep Scanning & SSL Check...**\n`{url}`\nPlease wait...", parse_mode="Markdown")
+        
+        ssl_res, ssl_score = await check_ssl_certificate(url)
+        headers_res, headers_score = await check_security_headers(url)
+        sensitive_res, sensitive_count = await check_sensitive_files(url)
+        sqli_res, sqli_vuln = await check_sqli(url)
+        xss_res, xss_vuln = await check_xss(url)
+        ports_res, open_ports_count = await scan_ports(url)
+        
+        risk_score = headers_score - (sensitive_count * 15) - (30 if sqli_vuln else 0) - (25 if xss_vuln else 0) - (open_ports_count * 3)
+        final_safety_percentage = max(0, risk_score)
+        
+        if final_safety_percentage < 40 or sqli_vuln or xss_vuln:
+            risk_label = "Critical (High risk of breaches)"
+        elif final_safety_percentage < 70:
+            risk_label = "Medium (Needs security hardening)"
+        else:
+            risk_label = "Relatively Safe (Good security baseline)"
+            
+        full_details = f"{ssl_res}\n{headers_res}\n{sensitive_res}\n{sqli_res}\n{xss_res}\n{ports_res}"
+        
+        conn = sqlite3.connect('scanner_vault.db')
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO scans (user_id, target_url, scan_date, risk_level, details) VALUES (?, ?, ?, ?, ?)",
+                       (query.from_user.id, url, datetime.now().strftime('%Y-%m-%d %H:%M'), risk_label, full_details))
+        conn.commit()
+        conn.close()
+        
+        summary_text = (
+            f"🎯 **Falcon Eye Audit Results & SSL Check:**\n"
+            f"🔗 Target: `{url}`\n\n"
+            f"📊 **Safety Rate:** `{final_safety_percentage}%`\n"
+            f"⚠️ **Risk Level:** {risk_label}\n\n"
+            f"```text\n"
+            f"{full_details}\n"
+            f"```"
+        )
+        
+        if len(summary_text) > 4096:
+            summary_text = summary_text[:4000] + "\n[Output Truncated]"
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=summary_text,
+            parse_mode="Markdown"
+        )
+        
+        clean_domain = url.replace("https://", "").replace("http://", "").split("/")[0].replace(":", "_")
+        
+        if query.data in ["run_full_audit", "run_pdf_report"]:
+            pdf_file = generate_pdf_report(url, final_safety_percentage, risk_label, full_details)
+            await context.bot.send_document(
+                chat_id=query.message.chat_id,
+                document=pdf_file,
+                filename=f"Security_Report_{clean_domain}.pdf",
+                caption=f"🦅📄 Official PDF Security Report for: {url}"
+            )
+            
+        if query.data == "run_json_report":
+            json_file = generate_json_report(url, final_safety_percentage, risk_label, full_details)
+            await context.bot.send_document(
+                chat_id=query.message.chat_id,
+                document=json_file,
+                filename=f"Security_Report_{clean_domain}.json",
+                caption=f"🦅📦 Official JSON Report for: {url}"
+            )
+
+if __name__ == '__main__':
+    app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("scan", scan_command))
-
-    print("بوت عين الصقر (النسخة الآمنة والدقيقة) يعمل الآن...")
+    app.add_handler(CommandHandler("history", history_command))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    app.add_handler(CallbackQueryHandler(button_callback))
+    
+    print("Falcon Eye Upgraded & Running successfully...")
     app.run_polling()
