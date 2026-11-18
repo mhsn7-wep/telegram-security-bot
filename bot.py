@@ -218,7 +218,7 @@ async def scan_ports(url):
             
     return result, open_ports
 
-# دالة توليد الـ PDF المنظّفة بالكامل من المربعات السوداء والإيموجي
+# الدالة المعدلة والآمنة 100% للـ PDF لمنع المربعات السوداء نهائياً
 def generate_pdf_report(url, safety_percent, risk_text, raw_details):
     pdf_buffer = io.BytesIO()
     c = canvas.Canvas(pdf_buffer, pagesize=letter)
@@ -238,17 +238,15 @@ def generate_pdf_report(url, safety_percent, risk_text, raw_details):
     text_object.setFont("Helvetica", 8)
     text_object.setLeading(12)
     
-    emoji_pattern = re.compile("[\U00010000-\U0010ffff]|[\u2600-\u27BF]|[\U0001f300-\U0001f5ff]|[\U0001f600-\U0001f64f]|[\U0001f680-\U0001f6ff]|[\U0001f700-\U0001f77f]|[\U0001f780-\U0001f7ff]|[\U0001f800-\U0001f8ff]|[\U0001f900-\U0001f9ff]|[\U0001fa00-\U0001fa6f]|[\U0001fa70-\U0001faff]|[\u2000-\u3300]", flags=re.UNICODE)
-    
     for line in raw_details.split('\n'):
-        clean_line = emoji_pattern.sub(r'', line)
-        clean_line = clean_line.encode('ascii', 'ignore').decode('ascii')
+        # فلترة قاسية جداً تضمن قبول الحروف الإنجليزية القياسية فقط وتحويل أي رمز غريب
+        clean_line = "".join([ch for ch in line if ord(ch) < 128])
         
-        if len(clean_line.strip()) == 0:
+        if not clean_line.strip():
             continue
             
-        if len(clean_line) > 100:
-            clean_line = clean_line[:97] + "..."
+        if len(clean_line) > 95:
+            clean_line = clean_line[:92] + "..."
             
         text_object.textLine(clean_line)
         
@@ -270,13 +268,13 @@ def generate_json_report(url, safety_percent, risk_text, raw_details):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("🦅 Start Falcon Eye", callback_data="intro")],
-        [InlineKeyboardButton("📊 Control Panel / History", callback_data="show_history")]
+        [InlineKeyboardButton("Start Falcon Eye", callback_data="intro")],
+        [InlineKeyboardButton("Control Panel / History", callback_data="show_history")]
     ]
     await update.message.reply_text(
-        "👋 **Welcome to Falcon Eye Bot (عين الصقر 🦅)**\n\n"
+        "Welcome to Falcon Eye Bot\n\n"
         "Advanced Upgraded Vulnerability Scanner with SSL & Clean PDF Report.\n"
-        "Send your target URL (e.g., `https://example.com`) to begin.",
+        "Send your target URL (e.g., https://example.com) to begin.",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
@@ -290,33 +288,33 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     
     if not rows:
-        await update.message.reply_text("📂 No previous scans found.")
+        await update.message.reply_text("No previous scans found.")
         return
         
-    text = "📊 **Your Recent Scans:**\n\n"
+    text = "Your Recent Scans:\n\n"
     for row in rows:
-        text += f"🔗 Target: `{row[0]}`\n📅 Date: `{row[1]}`\n⚠️ Risk: {row[2]}\n-------------------\n"
+        text += f"Target: {row[0]}\nDate: {row[1]}\nRisk: {row[2]}\n-------------------\n"
         
-    keyboard = [[InlineKeyboardButton("🗑️ Clear History", callback_data="clear_history")]]
+    keyboard = [[InlineKeyboardButton("Clear History", callback_data="clear_history")]]
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
     if not url.startswith("http://") and not url.startswith("https://"):
-        await update.message.reply_text("❌ Please send a valid URL starting with `http://` or `https://`")
+        await update.message.reply_text("Please send a valid URL starting with http:// or https://")
         return
         
     context.user_data['target_url'] = url
     
     keyboard = [
-        [InlineKeyboardButton("📊 Run Full Deep Audit", callback_data="run_full_audit")],
-        [InlineKeyboardButton("📄 Export Clean PDF Report", callback_data="run_pdf_report")],
-        [InlineKeyboardButton("📦 Export JSON Report", callback_data="run_json_report")],
-        [InlineKeyboardButton("🏠 Main Dashboard", callback_data="intro")]
+        [InlineKeyboardButton("Run Full Deep Audit", callback_data="run_full_audit")],
+        [InlineKeyboardButton("Export Clean PDF Report", callback_data="run_pdf_report")],
+        [InlineKeyboardButton("Export JSON Report", callback_data="run_json_report")],
+        [InlineKeyboardButton("Main Dashboard", callback_data="intro")]
     ]
     
     await update.message.reply_text(
-        f"🦅 **Target Captured:**\n`{url}`\n\nSelect an option:",
+        f"Target Captured:\n{url}\n\nSelect an option:",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
@@ -334,15 +332,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         
         if not rows:
-            await query.edit_message_text("📂 No previous scans found.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="intro")]]))
+            await query.edit_message_text("No previous scans found.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="intro")]]))
             return
             
-        text = "📊 **Recent Scans History:**\n\n"
+        text = "Recent Scans History:\n\n"
         for row in rows:
-            text += f"🔗 `{row[0]}`\n📅 `{row[1]}` | ⚠️ {row[2]}\n\n"
+            text += f"{row[0]}\n{row[1]} | {row[2]}\n\n"
         keyboard = [
-            [InlineKeyboardButton("🗑️ Clear History", callback_data="clear_history")],
-            [InlineKeyboardButton("🔙 Back", callback_data="intro")]
+            [InlineKeyboardButton("Clear History", callback_data="clear_history")],
+            [InlineKeyboardButton("Back", callback_data="intro")]
         ]
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         return
@@ -354,24 +352,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cursor.execute("DELETE FROM scans WHERE user_id = ?", (user_id,))
         conn.commit()
         conn.close()
-        await query.edit_message_text("🗑️ History cleared successfully!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="intro")]]))
+        await query.edit_message_text("History cleared successfully!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="intro")]]))
         return
 
     if query.data == "intro":
         keyboard = [
-            [InlineKeyboardButton("🦅 Start Scanning", callback_data="intro_msg")],
-            [InlineKeyboardButton("📊 Control Panel / History", callback_data="show_history")]
+            [InlineKeyboardButton("Start Scanning", callback_data="intro_msg")],
+            [InlineKeyboardButton("Control Panel / History", callback_data="show_history")]
         ]
-        await query.edit_message_text("🦅 **Falcon Eye Dashboard Ready.**\nSend any target URL to begin.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await query.edit_message_text("Falcon Eye Dashboard Ready.\nSend any target URL to begin.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         return
 
     url = context.user_data.get('target_url')
     if not url:
-        await query.edit_message_text("⚠️ Please send the target URL first.")
+        await query.edit_message_text("Please send the target URL first.")
         return
 
     if query.data in ["run_full_audit", "run_pdf_report", "run_json_report"]:
-        await query.edit_message_text(f"🦅 **Falcon Eye Deep Scanning & SSL Check...**\n`{url}`\nPlease wait...", parse_mode="Markdown")
+        await query.edit_message_text(f"Falcon Eye Deep Scanning & SSL Check...\n{url}\nPlease wait...", parse_mode="Markdown")
         
         ssl_res, ssl_score = await check_ssl_certificate(url)
         headers_res, headers_score = await check_security_headers(url)
@@ -400,10 +398,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         
         summary_text = (
-            f"🎯 **Falcon Eye Audit Results & SSL Check:**\n"
-            f"🔗 Target: `{url}`\n\n"
-            f"📊 **Safety Rate:** `{final_safety_percentage}%`\n"
-            f"⚠️ **Risk Level:** {risk_label}\n\n"
+            f"Falcon Eye Audit Results & SSL Check:\n"
+            f"Target: {url}\n\n"
+            f"Safety Rate: {final_safety_percentage}%\n"
+            f"Risk Level: {risk_label}\n\n"
             f"```text\n"
             f"{full_details}\n"
             f"```"
@@ -426,7 +424,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=query.message.chat_id,
                 document=pdf_file,
                 filename=f"Security_Report_{clean_domain}.pdf",
-                caption=f"🦅📄 Official PDF Security Report for: {url}"
+                caption=f"Official PDF Security Report for: {url}"
             )
             
         if query.data == "run_json_report":
@@ -435,7 +433,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=query.message.chat_id,
                 document=json_file,
                 filename=f"Security_Report_{clean_domain}.json",
-                caption=f"🦅📦 Official JSON Report for: {url}"
+                caption=f"Official JSON Report for: {url}"
             )
 
 if __name__ == '__main__':
